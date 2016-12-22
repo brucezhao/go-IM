@@ -16,6 +16,8 @@ const C_LOGLEVEL_RUN = 0
 const C_LOGLEVEL_WARNING = 1
 const C_LOGLEVEL_ERROR = 2
 
+var LOGLEVELSTR [3]string = [3]string{"Run", "Warning", "Error"}
+
 type IMLog struct {
 	loger *log.Logger
 }
@@ -39,5 +41,5 @@ func (il *IMLog) log(conn *net.Conn, level int, args ...interface{}) {
 	}
 
 	sAtt := fmt.Sprint(args)
-	il.loger.Println(level, sIP, sAtt)
+	il.loger.Println(LOGLEVELSTR[level], sIP, sAtt)
 }

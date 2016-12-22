@@ -31,19 +31,17 @@ func main() {
 	g_loger.log(nil, C_LOGLEVEL_RUN, "服务器启动，版本：", VER)
 
 	//读配置文件
-	cfg, err := NewConfig()
-	if err != nil {
-		g_loger.log(nil, C_LOGLEVEL_ERROR, err)
-		return
-	}
+	cfg := NewConfig()
 
 	//创建内部监听
-	NewInterListener(cfg)
+	interListener := NewInterListener(cfg)
+	go interListener.Listen()
 
 	//创建外部监听
-	NewOuterListener(cfg)
+	outerListener := NewOuterListener(cfg, interListener)
+	go outerListener.Listen()
 
-	//监听退出信息
+	//监听退出信号
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 
