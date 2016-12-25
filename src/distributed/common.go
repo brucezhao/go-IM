@@ -4,6 +4,7 @@ package main
 import (
 	"errors"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -25,4 +26,13 @@ func ReadUint32(conn net.Conn, buf []byte) (uint32, error) {
 		result := (uint32)(buf[0])<<24 + (uint32)(buf[1])<<16 + (uint32)(buf[2])<<8 + (uint32)(buf[3])
 		return result, nil
 	}
+}
+
+//将端口号从IP中删去
+func TrimIP(ip string) string {
+	i := strings.Index(ip, ":")
+	if i >= 0 {
+		ip = ip[:i]
+	}
+	return ip
 }

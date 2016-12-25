@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -75,6 +76,7 @@ func (il *InterListener) Listen() {
 
 	g_loger.log(nil, C_LOGLEVEL_RUN, "开始监听内部端口：", il.port)
 
+	var sIP string
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -82,10 +84,12 @@ func (il *InterListener) Listen() {
 			continue
 		}
 		//判断是否在白名单中
-		if _, ok := il.whiteList[conn.RemoteAddr().String()]; ok {
-			g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器已连接")
+		sIP = conn.RemoteAddr().String()
+		sIP = TrimIP(sIP)
+		if _, ok := il.whiteList[sIP]; ok {
 			go il.handler(conn)
 		} else {
+			g_loger.log(&conn, C_LOGLEVEL_WARNING, "IP不在白名单中，拒绝连接。")
 			conn.Close()
 		}
 	}
@@ -139,11 +143,14 @@ func (il *InterListener) GetServerIP() string {
 
 //链接处理函数
 func (il *InterListener) handler(conn net.Conn) {
+	il.increaseCurrentServerCount(1)
+	g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器已连接，服务器数量为：", il.currentServerCount)
+
 	//首先获取可用的链接信息数据结构体
 	realIndex := il.getRealIndex()
 	pInfo := &(il.realBuffer[realIndex])
 	pInfo.Connected = true
-	pInfo.IP = conn.RemoteAddr().String()
+	pInfo.IP = TrimIP(conn.RemoteAddr().String())
 	pInfo.Port = ""
 	pInfo.Count = 0
 
@@ -156,7 +163,8 @@ func (il *InterListener) handler(conn net.Conn) {
 		pInfo.IP = ""
 		pInfo.Port = ""
 		pInfo.Count = 0
-		g_loger.log(&conn, C_LOGLEVEL_ERROR, "断开连接。")
+		il.increaseCurrentServerCount(-1)
+		g_loger.log(&conn, C_LOGLEVEL_RUN, "断开连接，服务器数量为：", il.currentServerCount)
 	}()
 
 	//设置超时
@@ -173,19 +181,24 @@ func (il *InterListener) handler(conn net.Conn) {
 		g_loger.log(&conn, C_LOGLEVEL_ERROR, err)
 		return
 	}
+	g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器端口：", num)
 	pInfo.Port = fmt.Sprint(num)
 
 	for {
 		//读工作服务器发过来的连接数
 		num, err = ReadUint32(conn, readBuffer)
+		//g_loger.log(&conn, C_LOGLEVEL_RUN, num, err)
 		if err == nil {
+			g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器连接数：", num)
 			pInfo.Count = num
 			//重新设置超时
 			SetDeadLine(conn, il.timeout*2)
 
 		} else {
-			//出现通讯错误，断开重连
-			g_loger.log(&conn, C_LOGLEVEL_ERROR, "收到非法数据:", err)
+			//出现通讯错误，断开连接，io.EOF是客户端断开时的消息
+			if err != io.EOF {
+				g_loger.log(&conn, C_LOGLEVEL_ERROR, "收到非法数据:", err)
+			}
 			return
 		}
 	}
@@ -212,7 +225,6 @@ func (il *InterListener) getRealIndex() int {
 func (il *InterListener) syncBuffer() {
 	for {
 		var maxCount uint32 = 0
-		//bufferLen := len(il.realBuffer)
 
 		for _, v := range il.realBuffer {
 			if v.Count > maxCount {
@@ -239,5 +251,8 @@ func (il *InterListener) syncBuffer() {
 
 //增减当前服务器数量
 func (il *InterListener) increaseCurrentServerCount(val int) {
-	//
+	il.mutexReal.Lock()
+	defer il.mutexReal.Unlock()
+
+	il.currentServerCount += val
 }

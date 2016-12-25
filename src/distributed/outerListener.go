@@ -38,13 +38,17 @@ func (ol *OuterListener) Listen() {
 
 	g_loger.log(nil, C_LOGLEVEL_RUN, "开始监听外部端口：", ol.port)
 
+	var sIP string
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			g_loger.log(nil, C_LOGLEVEL_ERROR, "外部端口出现错误：", err)
 			continue
 		}
-		if _, ok := ol.blackList[conn.RemoteAddr().String()]; ok {
+
+		sIP = TrimIP(conn.RemoteAddr().String())
+
+		if _, ok := ol.blackList[sIP]; !ok {
 			go ol.handler(conn)
 		} else {
 			conn.Close()
@@ -54,15 +58,16 @@ func (ol *OuterListener) Listen() {
 
 //链接处理函数
 func (ol *OuterListener) handler(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+	}()
+
 	s := ol.interListener.GetServerIP()
 
 	if s == "" {
 		return
 	}
 
-	conn.Write([]byte(s))
 	SetDeadLine(conn, 3)
-	buff := make([]byte, 4)
-	conn.Read(buff)
+	conn.Write([]byte(s))
 }
