@@ -12,7 +12,7 @@ import (
 )
 
 //版本号
-const VER string = "v1.0 build 1612260006"
+const VER string = "v1.0 build 1612262219"
 
 //全局日志变量
 var g_loger *IMLog
