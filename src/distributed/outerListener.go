@@ -63,7 +63,6 @@ func (ol *OuterListener) handler(conn net.Conn) {
 	}()
 
 	s := ol.interListener.GetServerIP()
-	g_loger.log(&conn, C_LOGLEVEL_RUN, "获取IP：", s)
 
 	if s == "" {
 		s = ":"

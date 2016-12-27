@@ -100,53 +100,11 @@ func (il *InterListener) Listen() {
 }
 
 //返回一个可用的工作服务器IP
-//在没有加锁的情况下，这个函数可能会存在读写的冲突上，导致分配的结果不是很均衡，
-//但是这种不均衡的影响不大，而且每隔一分钟是会同步真实的连接数，所以读写冲突产
-//生的后果没有什么太大影响
 func (il *InterListener) GetServerIP() string {
-	g_loger.log(nil, C_LOGLEVEL_RUN, "分配前：")
-	g_loger.log(nil, C_LOGLEVEL_RUN, "Real:", il.getServerListInfo(&il.realList))
-	g_loger.log(nil, C_LOGLEVEL_RUN, "Work:", il.getServerListInfo(&il.workList))
-
 	if len(il.workList) == 0 {
 		return ""
 	}
 
-	/*
-		if il.needLockWorkBuffer {
-			il.mutexWork.Lock()
-			defer il.mutexWork.Unlock()
-		}
-
-		bi := il.bufferIndex
-		bufferLen := len(il.workList)
-
-		if bi < 0 {
-			bi = 0
-		} else if bi >= bufferLen {
-			bi = 0
-		}
-
-		//找到一个连接数小于最大连接数的服务器
-		var count uint32
-		for ; bi < bufferLen; bi++ {
-			if il.workList[bi].Connected {
-				count = il.workList[bi].Count
-				if count < il.maxCount {
-					break
-				}
-			}
-		}
-		//如果都没有找到，则将maxcount加10,重新分配
-		if bi >= bufferLen {
-			bi = 0
-			count = il.workList[bi].Count
-			il.maxCount += 10
-		}
-		count++
-
-		il.workList[bi].Count = count
-	*/
 	var bi int = -1
 	select {
 	case bi = <-il.chanIndex:
@@ -157,11 +115,7 @@ func (il *InterListener) GetServerIP() string {
 	if (bi < 0) || (bi >= len(il.workList)) {
 		return ""
 	}
-
-	g_loger.log(nil, C_LOGLEVEL_RUN, "Index:", bi, ", Result:", il.workList[bi].IP+":"+il.workList[bi].Port)
-	g_loger.log(nil, C_LOGLEVEL_RUN, "分配后：")
-	g_loger.log(nil, C_LOGLEVEL_RUN, "Real:", il.getServerListInfo(&il.realList))
-	g_loger.log(nil, C_LOGLEVEL_RUN, "Work:", il.getServerListInfo(&il.workList))
+	//g_loger.log(nil, C_LOGLEVEL_RUN, "Index:", bi, ", Work:", il.getServerListInfo(&il.workList))
 
 	return il.workList[bi].IP + ":" + il.workList[bi].Port
 }
@@ -173,21 +127,27 @@ func (il *InterListener) handler(conn net.Conn) {
 
 	//首先获取可用的链接信息数据结构体
 	realIndex := il.getRealIndex()
+
+	il.mutexReal.Lock()
 	pInfo := &(il.realList[realIndex])
 	pInfo.Connected = true
 	pInfo.IP = TrimIP(conn.RemoteAddr().String())
 	pInfo.Port = ""
 	pInfo.Count = 0
+	il.mutexReal.Unlock()
 
 	//结束处理函数
 	defer func() {
 		recover()
 		conn.Close()
 		//将链接信息设置为未连接
+		il.mutexReal.Lock()
+		pInfo = &(il.realList[realIndex])
 		pInfo.Connected = false
 		pInfo.IP = ""
 		pInfo.Port = ""
 		pInfo.Count = 0
+		il.mutexReal.Unlock()
 		il.increaseCurrentServerCount(-1)
 		g_loger.log(&conn, C_LOGLEVEL_RUN, "断开连接，服务器数量为：", il.currentServerCount)
 	}()
@@ -207,15 +167,21 @@ func (il *InterListener) handler(conn net.Conn) {
 		return
 	}
 	g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器端口：", num)
+	il.mutexReal.Lock()
+	pInfo = &(il.realList[realIndex])
 	pInfo.Port = fmt.Sprint(num)
+	il.mutexReal.Unlock()
 
 	for {
 		//读工作服务器发过来的连接数
 		num, err = ReadUint32(conn, readBuffer)
-		//g_loger.log(&conn, C_LOGLEVEL_RUN, num, err)
+
 		if err == nil {
-			//g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器连接数：", num)
+			il.mutexReal.Lock()
+			pInfo = &(il.realList[realIndex])
 			pInfo.Count = num
+			il.mutexReal.Unlock()
+
 			//重新设置超时
 			SetDeadLine(conn, il.timeout*2)
 
@@ -243,7 +209,7 @@ func (il *InterListener) getRealIndex() int {
 	info := ConnectionInfo{}
 	il.realList = append(il.realList, info)
 
-	return len(il.realList)
+	return len(il.realList) - 1
 }
 
 //在workList中找出合适的服务器，并将索引值写入chanIndex中
@@ -260,7 +226,6 @@ func (il *InterListener) distributeWorkIndex() {
 			continue
 		}
 
-		//g_loger.log(nil, C_LOGLEVEL_RUN, "分配IP之大循环")
 		listLen = len(il.workList)
 		if index == -1 {
 			//说明workList所有的连接数都已经大于maxCount了
@@ -287,10 +252,6 @@ func (il *InterListener) syncBuffer() {
 	for {
 		var maxCount uint32 = 0
 
-		//		g_loger.log(nil, C_LOGLEVEL_RUN, "同步前数据：")
-		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Real:", il.getServerListInfo(&il.realList))
-		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Work:", il.getServerListInfo(&il.workList))
-
 		for _, v := range il.realList {
 			if v.Connected && (v.Count > maxCount) {
 				maxCount = v.Count
@@ -301,13 +262,22 @@ func (il *InterListener) syncBuffer() {
 			il.mutexWork.Lock()
 		}
 
-		//il.workList = il.realList[:]
 		il.maxCount = maxCount
 		for i := 0; i < len(il.workList); i++ {
 			il.workList[i] = il.realList[i]
+			//			il.workList[i].Connected = il.realList[i].Connected
+			//			il.workList[i].Count = il.realList[i].Count
+			//			il.workList[i].IP = il.realList[i].IP
+			//			il.workList[i].Port = il.realList[i].Port
 		}
 		for i := len(il.workList); i < len(il.realList); i++ {
 			il.workList = append(il.workList, il.realList[i])
+		}
+		for i := len(il.realList); i < len(il.workList); i++ {
+			il.workList[i].Connected = false
+			il.workList[i].Count = 0
+			il.workList[i].IP = ""
+			il.workList[i].Port = ""
 		}
 
 		if il.needLockWorkBuffer {
@@ -315,8 +285,8 @@ func (il *InterListener) syncBuffer() {
 		}
 
 		//		g_loger.log(nil, C_LOGLEVEL_RUN, "同步后数据：")
-		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Real:", il.getServerListInfo(&il.realList))
-		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Work:", il.getServerListInfo(&il.workList))
+		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Real:", il.realList) //il.getServerListInfo(&il.realList))
+		//		g_loger.log(nil, C_LOGLEVEL_RUN, "Work:", il.workList) //il.getServerListInfo(&il.workList))
 
 		//每隔1分钟同步一次
 		d := time.Duration(int64(il.syncBufferInterval) * int64(time.Second))
@@ -337,9 +307,9 @@ func (il *InterListener) getServerListInfo(list *[]ConnectionInfo) string {
 	var str string = ""
 
 	for _, v := range *list {
-		if v.Connected {
-			str += fmt.Sprintf("%s=%d,", v.Port, v.Count)
-		}
+		//if v.Connected {
+		str += fmt.Sprintf("%d, %s, %s, %d;", v.Connected, v.IP, v.Port, v.Count)
+		//}
 	}
 	return str
 }
