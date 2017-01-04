@@ -58,9 +58,7 @@ func (ol *OuterListener) Listen() {
 
 //链接处理函数
 func (ol *OuterListener) handler(conn net.Conn) {
-	defer func() {
-		conn.Close()
-	}()
+	defer conn.Close()
 
 	s := ol.interListener.GetServerIP()
 
@@ -68,6 +66,6 @@ func (ol *OuterListener) handler(conn net.Conn) {
 		s = ":"
 	}
 
-	SetDeadLine(conn, 3)
+	//	SetDeadLine(conn, 1)
 	conn.Write([]byte(s))
 }

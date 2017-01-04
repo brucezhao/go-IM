@@ -1,5 +1,5 @@
 {
 "WhiteList":["127.0.0.1"],
-"InterServerCount":100,
+"InterServerCount":5,
 "SyncBufferInterval":30
 }
