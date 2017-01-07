@@ -12,41 +12,12 @@ import (
 )
 
 //版本号
-const VER string = "v1.0 build 1612272219"
+const VER string = "v1.0 build 170107171136"
 
 //全局日志变量
 var g_loger *IMLog
 
 func main() {
-	//test code
-	//	c := NewConnections(3)
-
-	//	for i := 0; i < 3; i++ {
-	//		m := ConnectionInfo{true, "127.0.0.1", "12171", uint32(i)}
-	//		//		fmt.Println("m=", m)
-	//		c.Append(m)
-	//	}
-	//	//	p := c.At(1)
-	//	fmt.Println(c)
-	//	p := c.At(1)
-	//	fmt.Println(*p)
-
-	//	for i := 3; i < 5; i++ {
-	//		m := ConnectionInfo{true, "127.0.0.1", "12171", uint32(i)}
-	//		//		fmt.Println("m=", m)
-	//		c.Append(m)
-	//	}
-	//	fmt.Println(c)
-
-	//	c1 := NewConnections(3)
-	//	c1.Copy(c)
-	//	fmt.Println(c1)
-
-	//	p.Connected = false
-	//	p.Count = 100
-	//	fmt.Println(c)
-
-	//	return
 
 	var err error
 

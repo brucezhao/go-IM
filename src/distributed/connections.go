@@ -7,17 +7,31 @@ package main
 
 import (
 	"fmt"
+	"sort"
 )
 
 //每个连接的信息
 type ConnectionInfo struct {
-	Connected bool //是否有连接
-	IP        string
-	Port      string //监听的端口
+	Connected bool   //是否有连接
+	InterIP   string //内部连接的IP:Port
+	OuterIP   string //对外监听的IP:Port
 	Count     uint32 //该工作服务器的客户连接数
 }
 
 type ConnectionInfoSlice []ConnectionInfo
+
+/*sort.Interface */
+func (c ConnectionInfoSlice) Len() int {
+	return len(c)
+}
+
+func (c ConnectionInfoSlice) Less(i, j int) bool {
+	return c[i].Count < c[j].Count
+}
+
+func (c ConnectionInfoSlice) Swap(i, j int) {
+	c[i], c[j] = c[j], c[i]
+}
 
 type Connections struct {
 	datas           map[int]*ConnectionInfoSlice
@@ -95,33 +109,36 @@ func (c *Connections) At(index int) *ConnectionInfo {
 	return pCi
 }
 
-//深度拷贝
+//深度拷贝,c必须是已经创建对象，并且capacity必须一致
 func (c *Connections) Copy(src *Connections) *Connections {
-	//首先清空原有内容
-	for _, v := range c.datas {
-		*v = nil
+	//根据本项目的特点，不考虑c.count大于src.count的情况
+	for i := 0; i < c.count; i++ {
+		*(c.At(i)) = *(src.At(i))
 	}
-	c.datas = nil
-
-	c.datas = make(map[int]*ConnectionInfoSlice)
-	c.capacity = src.capacity
-
-	var pCs *ConnectionInfoSlice = nil
-	for i := 0; i <= src.currentMapIndex; i++ {
-		pCs = src.datas[i]
-		data := make(ConnectionInfoSlice, len(*pCs), c.capacity)
-		copy(data, *pCs)
-		//fmt.Println(*pCs)
-		//c.datas = append(c.datas, &data)
-		c.datas[i] = &data
-
-		if i == src.currentMapIndex {
-			c.currentSlice = &data
-		}
+	for i := c.count; i < src.count; i++ {
+		c.Append(*(src.At(i)))
 	}
 
 	c.currentMapIndex = src.currentMapIndex
+	c.currentSlice = c.datas[c.currentMapIndex]
 	c.count = src.count
 
 	return c
+}
+
+//排序
+func (c *Connections) Sort() {
+	if c.count <= 1 {
+		//少于两个元素，不用排序
+		return
+	}
+
+	tempSlice := make(ConnectionInfoSlice, c.count, c.count)
+	for i := 0; i < c.count; i++ {
+		tempSlice[i] = *c.At(i)
+	}
+	sort.Sort(tempSlice)
+	for i := 0; i < c.count; i++ {
+		*c.At(i) = tempSlice[i]
+	}
 }

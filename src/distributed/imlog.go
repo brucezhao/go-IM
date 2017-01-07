@@ -15,8 +15,9 @@ import (
 const C_LOGLEVEL_RUN = 0
 const C_LOGLEVEL_WARNING = 1
 const C_LOGLEVEL_ERROR = 2
+const C_LOGLEVEL_DEBUG = 3
 
-var LOGLEVELSTR [3]string = [3]string{"Run", "Warning", "Error"}
+var LOGLEVELSTR [4]string = [4]string{"Run", "Warning", "Error", "Debug"}
 
 type IMLog struct {
 	loger *log.Logger

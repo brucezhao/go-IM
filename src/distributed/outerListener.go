@@ -66,6 +66,5 @@ func (ol *OuterListener) handler(conn net.Conn) {
 		s = ":"
 	}
 
-	//	SetDeadLine(conn, 1)
 	conn.Write([]byte(s))
 }

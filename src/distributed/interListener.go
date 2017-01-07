@@ -21,13 +21,10 @@ type InterListener struct {
 	workList           *Connections    //用于分配IP的服务器信息切片
 	realList           *Connections    //保存了真实情况的服务器信息切片
 	maxCount           uint32          //当前所有服务器的最大连接数
-	needLockWorkBuffer bool
 	mutexReal          sync.Mutex
-	mutexWork          sync.Mutex
-	syncBufferInterval int
-	bufferIndex        int      //当前workList的索引
-	currentServerCount int32    //当前工作服务器的数量
-	chanIndex          chan int //读写WorkList的chan
+	bufferIndex        int         //当前workList的索引
+	currentServerCount int32       //当前工作服务器的数量
+	chanIP             chan string //读写IP的chan
 }
 
 //构造函数
@@ -41,17 +38,12 @@ func NewInterListener(cfg *Config) *InterListener {
 
 	interListener.timeout = cfg.Timeout
 	interListener.port = cfg.InterPort
-	interListener.needLockWorkBuffer = cfg.NeedLockWorkBuffer
 	interListener.serverCount = cfg.InterServerCount
-	interListener.syncBufferInterval = cfg.SyncBufferInterval
-	interListener.workList = NewConnections(interListener.serverCount) //make([]ConnectionInfo, interListener.serverCount)
-	interListener.realList = NewConnections(interListener.serverCount) //make([]ConnectionInfo, interListener.serverCount)
+	interListener.workList = NewConnections(interListener.serverCount)
+	interListener.realList = NewConnections(interListener.serverCount)
 	interListener.bufferIndex = -1
-	//interListener.currentServerCount = 0
-	interListener.chanIndex = make(chan int, 1024)
+	interListener.chanIP = make(chan string, cfg.ChanBuffer)
 
-	//启动同步buffer的协程
-	go interListener.syncBuffer()
 	//启动IP分配协程
 	go interListener.distributeWorkIndex()
 
@@ -98,19 +90,14 @@ func (il *InterListener) GetServerIP() string {
 		return ""
 	}
 
-	var bi int = -1
+	var sIP string
 	select {
-	case bi = <-il.chanIndex:
+	case sIP = <-il.chanIP:
 	case <-time.After(time.Second):
 		//超时退出
 		return ""
 	}
-	if (bi < 0) || (bi >= il.workList.count) {
-		return ""
-	}
-	ci := il.workList.At(bi)
-
-	return ci.IP + ":" + ci.Port
+	return sIP
 }
 
 //链接处理函数
@@ -123,8 +110,8 @@ func (il *InterListener) handler(conn net.Conn) {
 
 	pInfo := il.realList.At(realIndex)
 	pInfo.Connected = true
-	pInfo.IP = TrimIP(conn.RemoteAddr().String())
-	pInfo.Port = ""
+	pInfo.InterIP = conn.RemoteAddr().String()
+	pInfo.OuterIP = ""
 	pInfo.Count = 0
 
 	//结束处理函数
@@ -133,6 +120,9 @@ func (il *InterListener) handler(conn net.Conn) {
 		conn.Close()
 		//将链接信息设置为未连接
 		pInfo.Connected = false
+		pInfo.InterIP = ""
+		pInfo.OuterIP = ""
+		pInfo.Count = 0
 
 		il.increaseCurrentServerCount(-1)
 		g_loger.log(&conn, C_LOGLEVEL_RUN, "断开连接，服务器数量为：", il.currentServerCount)
@@ -143,18 +133,19 @@ func (il *InterListener) handler(conn net.Conn) {
 
 	var num uint32
 	var err error
-	//接收缓冲区，因为只需要接收一个uint32的连接数，所以是4个字节
-	readBuffer := make([]byte, 4)
+	//接收缓冲区，因为最长只需要接收一个IP:Port字符串
+	readBuffer := make([]byte, 24)
 
-	//首先获取工作服务器发过来的端口号
-	num, err = ReadUint32(conn, readBuffer)
+	//首先获取工作服务器发过来的对外监听IP+端口号
+	//此处为了简单，没有做分包处理，要求工作服务器在发送IP后间隔1秒再发送连接数，避免粘包
+	n, err := conn.Read(readBuffer)
 	if err != nil {
 		g_loger.log(&conn, C_LOGLEVEL_ERROR, err)
 		return
 	}
-	g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器端口：", num)
 
-	pInfo.Port = fmt.Sprint(num)
+	pInfo.OuterIP = string(readBuffer[:n])
+	g_loger.log(&conn, C_LOGLEVEL_RUN, "工作服务器监听端口：", pInfo.OuterIP)
 
 	for {
 		//读工作服务器发过来的连接数
@@ -193,71 +184,56 @@ func (il *InterListener) getRealIndex() int {
 	return il.realList.count - 1
 }
 
-//在workList中找出合适的服务器，并将索引值写入chanIndex中
+//在workList中找出合适的服务器，并将IP放入chan中
 //该函数由goroutine调用
 func (il *InterListener) distributeWorkIndex() {
 	var maxCount uint32
-	var listLen int
+	var listCount int
 	var index int = 0
+	var pCi *ConnectionInfo = nil
 
 	for {
-		//如果还没有工作列表，则休眠等待
-		if il.workList.count <= 0 {
+		//如果还没有工作服务器列表，则休眠等待
+		if il.workList.count <= 0 && il.realList.count <= 0 {
 			time.Sleep(time.Second * 1)
 			continue
 		}
 
-		listLen = il.workList.count
-		if index == -1 {
-			//说明workList所有的连接数都已经大于maxCount了
-			maxCount += 10
-		} else {
-			maxCount = il.maxCount
-		}
-		index = -1
-		var pv *ConnectionInfo = nil
-		for i := 0; i < listLen; i++ {
-			pv = il.workList.At(i) //&(il.workList[i])
-			if pv.Connected && (pv.Count < maxCount) {
-				pv.Count++
-				//发给chan，如果没有客户端来取，则阻塞等待
-				index = i
-				il.chanIndex <- i
-			}
-		}
-	}
-}
-
-//将realBuffer的数据同步到workBuffer中
-func (il *InterListener) syncBuffer() {
-	var maxCount uint32
-	for {
+		//先将真实服务器列表拷贝到工作服务器列表，并排序
+		il.workList.Copy(il.realList)
+		il.workList.Sort()
+		//g_loger.log(nil, C_LOGLEVEL_RUN, il.workList)
+		//找出所有服务器中连接数的最大值
 		maxCount = 0
-
-		var pCi *ConnectionInfo = nil
-		for i := 0; i < il.realList.count; i++ {
-			pCi = il.realList.At(i)
+		for i := 0; i < il.workList.count; i++ {
+			pCi = il.workList.At(i)
 			if pCi.Connected && (pCi.Count > maxCount) {
 				maxCount = pCi.Count
 			}
 		}
-
-		//由于对slice操作可能引起内存变化，所以必须加锁
-		il.mutexWork.Lock()
-
-		il.maxCount = maxCount
-		for i := 0; i < il.workList.count; i++ {
-			*(il.workList.At(i)) = *(il.realList.At(i))
-		}
-		for i := il.workList.count; i < il.realList.count; i++ {
-			il.workList.Append(*(il.realList.At(i)))
+		//如果所有的服务器都没有连接，则设置最大值为100,也就是每个服务器分配10个客户端连接
+		if maxCount == 0 {
+			maxCount = 10
 		}
 
-		il.mutexWork.Unlock()
+		listCount = il.workList.count
+		if index == -1 {
+			//说明workList所有的连接数都已经大于maxCount了
+			maxCount += 10
+		}
 
-		//定时同步
-		d := time.Duration(int64(il.syncBufferInterval) * int64(time.Second))
-		time.Sleep(d)
+		index = -1
+		var pv *ConnectionInfo = nil
+		for i := 0; i < listCount; i++ {
+			pv = il.workList.At(i)
+			if pv.Connected && (pv.Count < maxCount) {
+				index = i
+				for i := pv.Count; i < maxCount; i++ {
+					//发给chan，如果没有客户端来取，则阻塞等待
+					il.chanIP <- pv.OuterIP
+				}
+			}
+		}
 	}
 }
 
@@ -272,7 +248,7 @@ func (il *InterListener) getServerListInfo(list *[]ConnectionInfo) string {
 
 	for _, v := range *list {
 		//if v.Connected {
-		str += fmt.Sprintf("%d, %s, %s, %d;", v.Connected, v.IP, v.Port, v.Count)
+		str += fmt.Sprintf("%d, %s, %s, %d;", v.Connected, v.InterIP, v.OuterIP, v.Count)
 		//}
 	}
 	return str
